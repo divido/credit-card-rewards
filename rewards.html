@@ -1,0 +1,343 @@
+<html>
+	<head>
+		<title>Credit Card Reward Analysis</title>
+		<meta content="text/html;charset=utf-8" http-equiv="Content-Type">
+		<meta content="utf-8" http-equiv="encoding">
+		<style>
+		input.amount {
+			width: 6em;
+			text-align: center;
+		}
+
+		td.number {
+			width: 7em;
+			text-align: center;
+		}
+
+		td.card {
+			padding-right: 1em;
+		}
+
+		th.totals {
+			text-align: left;
+			padding-left: 1.75em;
+		}
+
+		tr:nth-child(even) {
+			background: hsl(0, 0%, 95%);
+		}
+
+		table {
+			border: 1px solid hsl(0, 0%, 50%);
+			border-collapse: collapse;
+		}
+
+		hr {
+			margin: 2em 0em;
+		}
+
+		</style>
+		<script>
+		let cardDetails = {
+			CitiDouble: {
+				name: "Citi DoubleCash",
+				fee: 0,
+				baseRewards: 2
+			},
+			CitiPrestige: {
+				name: "Citi Prestige",
+				fee: 495,
+				baseRewards: 1,
+
+				Air: { rate: 5, credit: 200 },
+				Hotels: { rate: 3 },
+				Restaurants: 5
+			},
+			AmazonPrime: {
+				name: "Amazon Prime",
+				fee: 120,
+				baseRewards: 1,
+
+				Amazon: 5
+			},
+			SamsClub: {
+				name: "Sam's Club",
+				fee: 45,
+				baseRewards: 1,
+
+				Gas: { rate: 5, limit: 6000 },
+				Restaurants: 3,
+				Air: 3,
+				Hotels: 3
+			},
+			AmericanExpressBluePreferred: {
+				name: "American Express Blue Preferred",
+				fee: 95,
+				baseRewards: 1,
+
+				Groceries: { rate: 6, limit: 6000 },
+				Streaming: 6,
+				Gas: 3
+			},
+			AmericanExpressBlueEveryday: {
+				name: "American Express Blue Everyday",
+				fee: 0,
+				baseRewards: 1,
+
+				Groceries: { rate: 3, limit: 6000 },
+				Gas: 2
+			},
+			CapitalOneSavorOne: {
+				name: "Capital One SavorOne",
+				fee: 0,
+				baseRewards: 1,
+
+				Restaurants: 3,
+				Groceries: 2
+			},
+			CapitalOneSavor: {
+				name: "Capital One Savor",
+				fee: 95,
+				baseRewards: 1,
+
+				Restaurants: 4,
+				Entertainment: 4,
+				Groceries: 2
+			}
+		};
+
+		// Helper
+		const parseFlt = (str, defaultValue=0) => (parseFloat(str) || defaultValue);
+
+		// Store an array of all categories
+		// Starts life as a set, but will be a normal array soon
+		let categories = new Set();
+		for (let card in cardDetails) {
+			for (let key in cardDetails[card]) {
+				categories.add(key);
+			}
+		}
+		categories.delete('name');
+		categories.delete('fee');
+		categories.delete('baseRewards');
+		categories.add('Other');
+		categories = [... categories];
+
+		// Normalize the categories to be easier to process programmatically
+		for (let card in cardDetails) {
+			let baseRewards = parseFlt(cardDetails[card].baseRewards);
+			cardDetails[card].baseRewards = baseRewards;
+
+			cardDetails[card].fee = parseFlt(cardDetails[card].fee);
+
+			for (let category of categories) {
+				if (category in cardDetails[card]) {
+					if (typeof cardDetails[card][category] == 'object') {
+						cardDetails[card][category] = {
+							rate: parseFlt(cardDetails[card][category].rate),
+							credit: parseFlt(cardDetails[card][category].credit),
+							limit: parseFlt(cardDetails[card][category].limit, Infinity)
+						};
+
+					} else {
+						cardDetails[card][category] = { rate: parseFlt(cardDetails[card][category]), credit: 0, limit: Infinity };
+					}
+				} else {
+					cardDetails[card][category] = { rate: baseRewards, credit: 0, limit: Infinity }
+				}
+			}
+		}
+		console.log('cardDetails =', cardDetails);
+
+		// --------------------------------------------------------------------------------
+
+		function buildTable() {
+			let tableHTML = "";
+
+			let row = (content) => "<tr>" + content + "</tr>";
+			let hdr = (content) => "<th>" + content + "</th>";
+			let cell = (content) => "<td>" + content + "</td>";
+
+			// First row lists the categories
+			tableHTML += row(cell("") + categories.map((name) => hdr(name)).join("") + hdr("Cashback - Fee"));
+
+			// Now a row per card
+			for (let card in cardDetails) {
+				let cardLabel = "<td class='card'><input id='include-" + card + "' type='checkbox' checked='true' onChange='recompute();'><label for='include-" + card + "'>" + cardDetails[card].name + "</label></td>";
+				let spendCells = categories.map((name) => "<td class='number' id='spend-" + card + "-" + name + "'>xxx</td>").join("");
+				let cashbackCell = "<td class='number' id='cashback-" + card + "'>xxx</td>";
+				tableHTML += row(cardLabel + spendCells + cashbackCell);
+			}
+
+			// Put the totals at the bottom
+			tableHTML += row("<th class='totals'>Totals</th>" + categories.map((name) => "<td class='number'><input class='amount' id='amount-" + name + "' type='text' value='1000' onChange='recompute();'/></td>").join("") + "<td class='number' id='total-cashback'>xxx</td>");
+
+			// Assign the innerHTML
+			let table = document.getElementById("main-table");
+			table.innerHTML = tableHTML;
+
+			recompute();
+		}
+
+		// --------------------------------------------------------------------------------
+
+		function computeCategory(category, annualSpending, selectedCards) {
+			let allocation = {};
+			let cashback = {};
+			selectedCards.forEach((card) => allocation[card] = cashback[card] = 0);
+
+			while (annualSpending > 0) {
+				let bestCard;
+				let bestRate = -1;
+				let amount;
+
+				// Figure out the next best card to apply a chunk of spending to
+				selectedCards.forEach((card) => {
+					let cardRate = cardDetails[card].baseRewards;
+					let cardAmount = Infinity;
+
+					let { rate: categoryRate, credit: categoryCredit, limit: categoryLimit } = cardDetails[card][category];
+					let alreadySpent = allocation[card];
+
+					// Look for good deals (credits are great, category rates can be better)
+					if (alreadySpent < categoryCredit) {
+						cardRate = 100;
+						cardAmount = categoryCredit - alreadySpent;
+					} else if ((alreadySpent - categoryCredit) < categoryLimit && categoryRate > cardRate) {
+						cardRate = categoryRate;
+						cardAmount = categoryLimit - (alreadySpent - categoryCredit);
+					}
+
+					if (cardRate > bestRate) {
+						bestRate = cardRate;
+						bestCard = card;
+						amount = cardAmount;
+					}
+				});
+
+				amount = Math.min(amount, annualSpending);
+				allocation[bestCard] += amount;
+				cashback[bestCard] += (amount * bestRate / 100);
+				annualSpending -= amount;
+			}
+
+			return { allocation, cashback };
+		}
+
+		function compute(annualSpending, selectedCards) {
+			let results = { totalCashback: 0 };
+			selectedCards.forEach((card) => {
+				results[card] = { cashback: 0 };
+				categories.forEach((category) => results[card][category] = 0);
+			});
+
+			for (let category in annualSpending) {
+				let { allocation, cashback } = computeCategory(category, annualSpending[category], selectedCards);
+
+				selectedCards.forEach((card) => {
+					results[card][category] += allocation[card];
+					results[card].cashback += cashback[card];
+				});
+			}
+
+			// Apply the fees and add up the total cashback
+			selectedCards.forEach((card) => {
+				results[card].cashback -= cardDetails[card].fee;
+				results.totalCashback += results[card].cashback;
+			});
+
+			return results;
+		}
+
+		// --------------------------------------------------------------------------------
+
+		function recompute() {
+			let selectedCards = Object.keys(cardDetails)
+				.filter((card) => document.getElementById('include-' + card).checked);
+
+			let annualSpending = {};
+			categories.forEach((category) => annualSpending[category] = parseFlt(document.getElementById('amount-' + category).value));
+
+			let results = compute(annualSpending, selectedCards);
+
+			// --------------------
+
+			let setElem = (id, value) => {
+				let elem = document.getElementById(id);
+				if (!elem) {
+					console.log('id =', id);
+					console.log('elem =', elem);
+				}
+				elem.innerHTML = value;
+			};
+
+			for (let card in cardDetails) {
+				categories.forEach((category) => {
+					setElem('spend-' + card + '-' + category, results[card] ? results[card][category] : "");
+				});
+
+				setElem('cashback-' + card, results[card] ? results[card].cashback : "");
+			}
+
+			setElem('total-cashback', results.totalCashback);
+		}
+
+		// --------------------------------------------------------------------------------
+
+		function findBest() {
+			let combinations = {};
+
+			let cardNames = Object.keys(cardDetails);
+			let numCards = cardNames.length;
+
+			for (let i = 1; i <= numCards; i++) combinations[i] = [];
+
+			let limit = Math.pow(2, numCards);
+			for (let mask = 1; mask < limit; mask++) {
+				let comb = cardNames.filter((x, idx) => mask & (1 << idx));
+				combinations[comb.length].push(comb);
+			}
+
+			let annualSpending = {};
+			categories.forEach((category) => annualSpending[category] = parseFlt(document.getElementById('amount-' + category).value));
+
+			// ----------------------------------------
+
+			let previousBest = -Infinity;
+			let resultItems = [];
+
+			for (let num = 1; num <= numCards; num++) {
+				let bestResult = combinations[num]
+					.map((selectedCards) => compute(annualSpending, selectedCards))
+					.sort((a, b) => a.totalCashback - b.totalCashback)
+					.pop();
+
+				if (bestResult.totalCashback > previousBest) {
+					let prefix = "With " + num + " card" + (num == 1 ? "" : "s");
+					let value = "$" + bestResult.totalCashback.toFixed(2);
+					let cardList = Object.keys(bestResult)
+						.map((key) => cardDetails[key] && cardDetails[key].name)
+						.filter((x) => x)
+						.join(", ");
+
+					resultItems.push("<li>" + prefix +", total value is " + value + "; using: " + cardList + "</li>");
+					previousBest = bestResult.totalCashback;
+
+				} else {
+					resultItems.push("<li>After that, total cash back (net of fees) does not improve with additional cards</li>")
+					break;
+				}
+			}
+
+			document.getElementById("bestCombinations").innerHTML = resultItems.join("");
+		}
+
+		</script>
+	</head>
+	<body onLoad="buildTable();" >
+		<table id="main-table"></table>
+		<hr />
+		<input type="button" value="Find Best Combinations" onClick="findBest();" />
+		<ul id="bestCombinations"></ul>
+	</body>
+</html>
